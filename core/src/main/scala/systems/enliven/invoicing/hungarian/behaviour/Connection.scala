@@ -2,7 +2,7 @@ package systems.enliven.invoicing.hungarian.behaviour
 
 import akka.actor.Scheduler
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import akka.actor.typed.{ActorRef, Behavior, DispatcherSelector}
+import akka.actor.typed.{ActorRef, ActorSystem, Behavior, DispatcherSelector}
 import akka.pattern.retry
 import systems.enliven.invoicing.hungarian.api.Api.Protocol.Request.Invoices
 import systems.enliven.invoicing.hungarian.api.data.{Entity, Taxpayer}
@@ -10,14 +10,7 @@ import systems.enliven.invoicing.hungarian.api.{Api, Token}
 import systems.enliven.invoicing.hungarian.behaviour.Connection.Protocol
 import systems.enliven.invoicing.hungarian.core
 import systems.enliven.invoicing.hungarian.core.{Configuration, Logger}
-import systems.enliven.invoicing.hungarian.generated.{
-  InvoiceDirectionType,
-  ManageInvoiceResponse,
-  QueryInvoiceDataResponse,
-  QueryInvoiceDigestResponse,
-  QueryTransactionStatusResponse,
-  TokenExchangeResponse
-}
+import systems.enliven.invoicing.hungarian.generated.{InvoiceDirectionType, ManageInvoiceResponse, QueryInvoiceDataResponse, QueryInvoiceDigestResponse, QueryTransactionStatusResponse, TokenExchangeResponse}
 
 import java.util.Date
 import scala.concurrent.duration._
@@ -43,24 +36,28 @@ object Connection {
 
     final case class ValidateEntity(
       replyTo: ActorRef[Try[Unit]],
+      errorTo: ActorSystem[Guardian.Protocol.Command],
       entity: Entity
     )
      extends Command
 
     final case class QueryTaxpayer(
       replyTo: ActorRef[Try[Taxpayer]],
+      errorTo: ActorSystem[Guardian.Protocol.Command],
       taxNumber: String,
       entity: Entity)
      extends Command
 
     final case class QueryInvoiceData(
       replyTo: ActorRef[Try[QueryInvoiceDataResponse]],
+      errorTo: ActorSystem[Guardian.Protocol.Command],
       invoiceNumber: String,
       entity: Entity)
      extends Command
 
     final case class QueryInvoiceDigest(
       replyTo: ActorRef[Try[Seq[QueryInvoiceDigestResponse]]],
+      errorTo: ActorSystem[Guardian.Protocol.Command],
       entity: Entity,
       direction: InvoiceDirectionType,
       fromDate: Date,
@@ -70,6 +67,7 @@ object Connection {
 
     final case class QueryTransactionStatus(
       replyTo: ActorRef[Try[QueryTransactionStatusResponse]],
+      errorTo: ActorSystem[Guardian.Protocol.Command],
       transactionID: String,
       entity: Entity,
       returnOriginalRequest: Boolean = false)
@@ -77,6 +75,7 @@ object Connection {
 
     final case class ManageInvoice(
       replyTo: ActorRef[Try[ManageInvoiceResponse]],
+      errorTo: ActorSystem[Guardian.Protocol.Command],
       invoices: Invoices,
       entity: Entity)
      extends Command
@@ -111,7 +110,7 @@ class Connection private (
 
   private def initState: Behavior[Protocol.Message] =
     Behaviors.receiveMessage {
-      case Protocol.QueryInvoiceData(replyTo, invoiceNumber, entity) =>
+      case Protocol.QueryInvoiceData(replyTo, errorTo, invoiceNumber, entity) =>
         log.trace("Received [query-invoice-data] request.")
 
         api.queryInvoiceData(invoiceNumber, entity).onComplete {
@@ -119,6 +118,7 @@ class Connection private (
             log.debug("Finished [query-invoice-data] request.")
             replyTo ! value
           case Failure(exception) =>
+            errorTo ! Guardian.Protocol.SendMessageToDiscord("Failed [query-invoice-data] request due to [{}] with message [{}]!")
             log.error(
               "Failed [query-invoice-data] request due to [{}] with message [{}]!",
               exception.getClass.getName,
@@ -127,7 +127,7 @@ class Connection private (
         }
 
         Behaviors.same
-      case Protocol.QueryTaxpayer(replyTo, taxNumber, entity) =>
+      case Protocol.QueryTaxpayer(replyTo, errorTo, taxNumber, entity) =>
         log.trace("Received [query-taxpayer] request.")
 
         api.queryTaxpayer(taxNumber, entity).onComplete {
@@ -135,6 +135,7 @@ class Connection private (
             log.debug("Finished [query-taxpayer] request.")
             replyTo ! value.map(Taxpayer.create)
           case Failure(exception) =>
+            errorTo ! Guardian.Protocol.SendMessageToDiscord("Failed [query-taxpayer] request due to [{}] with message [{}]!")
             log.error(
               "Failed [query-taxpayer] request due to [{}] with message [{}]!",
               exception.getClass.getName,
@@ -143,7 +144,7 @@ class Connection private (
         }
 
         Behaviors.same
-      case Protocol.ValidateEntity(replyTo, entity) =>
+      case Protocol.ValidateEntity(replyTo, errorTo, entity) =>
         log.trace("Received [validate-entity] request.")
 
         refreshToken(entity).map(response =>
@@ -153,6 +154,7 @@ class Connection private (
             log.trace("Successfully validated entity!")
             replyTo ! scala.util.Success((): Unit)
           case Failure(throwable) =>
+            errorTo ! Guardian.Protocol.SendMessageToDiscord("Entity validation failed!")
             log.trace("Entity validation failed!")
             val message = throwable.getMessage
             replyTo ! scala.util.Failure(
@@ -176,7 +178,7 @@ class Connection private (
         }
 
         Behaviors.same
-      case Protocol.QueryInvoiceDigest(replyTo, entity, direction, fromDate, toDate, pages) =>
+      case Protocol.QueryInvoiceDigest(replyTo, errorTo, entity, direction, fromDate, toDate, pages) =>
         log.trace(
           "Received [query-invoice-digest] request."
         )
@@ -205,6 +207,8 @@ class Connection private (
                     case Success(_) =>
                       log.debug("Finished [query-invoice-digest] request.")
                     case Failure(exception) =>
+                      errorTo ! Guardian.Protocol.SendMessageToDiscord("Failed [query-invoice-digest] request " +
+                        "due to [{}] with message [{}]!")
                       log.error(
                         "Failed [query-invoice-digest] request " +
                           "due to [{}] with message [{}]!",
@@ -226,7 +230,7 @@ class Connection private (
         }
 
         Behaviors.same
-      case Protocol.QueryTransactionStatus(replyTo, transactionID, entity, returnOriginalRequest) =>
+      case Protocol.QueryTransactionStatus(replyTo, errorTo, transactionID, entity, returnOriginalRequest) =>
         log.trace(
           "Received [query-transaction-status] request with transaction ID [{}].",
           transactionID
@@ -240,6 +244,8 @@ class Connection private (
             )
             replyTo ! value
           case Failure(exception) =>
+            errorTo ! Guardian.Protocol.SendMessageToDiscord("Failed [query-transaction-status] request with " +
+              "transaction ID [{}] due to [{}] with message [{}]!")
             log.error(
               "Failed [query-transaction-status] request with transaction ID [{}] " +
                 "due to [{}] with message [{}]!",
@@ -250,26 +256,26 @@ class Connection private (
         }
 
         Behaviors.same
-      case Protocol.ManageInvoice(replyTo, invoices, entity) =>
+      case Protocol.ManageInvoice(replyTo, errorTo, invoices, entity) =>
         log.trace("Received [manage-invoice] request.")
 
         context.pipeToSelf(refreshToken(entity)) {
           case Success(response: TokenExchangeResponse) =>
             Protocol.PriorityManageInvoice(
               new Token(response, entity.credentials.exchangeKey),
-              Protocol.ManageInvoice(replyTo, invoices, entity)
+              Protocol.ManageInvoice(replyTo, errorTo, invoices, entity)
             )
           case Failure(throwable: Throwable) =>
             Protocol.ManageInvoiceFailed(
               throwable,
-              Protocol.ManageInvoice(replyTo, invoices, entity)
+              Protocol.ManageInvoice(replyTo, errorTo, invoices, entity)
             )
         }
 
         Behaviors.same
       case Protocol.PriorityManageInvoice(
             token,
-            Protocol.ManageInvoice(replyTo, entity, invoices)
+            Protocol.ManageInvoice(replyTo, errorTo, entity, invoices)
           ) =>
         log.trace("Running [manage-invoice] with token [{}].", token.value)
 
@@ -278,13 +284,14 @@ class Connection private (
             log.trace("Finish Invoice.")
             replyTo ! response
           case Failure(throwable: Throwable) =>
+            errorTo ! Guardian.Protocol.SendMessageToDiscord("Finish Invoice.")
             log.trace("Finish Invoice.")
             replyTo ! Failure(throwable)
         }
         Behaviors.same
       case Protocol.ManageInvoiceFailed(
             throwable,
-            Protocol.ManageInvoice(replyTo, _, _)
+            Protocol.ManageInvoice(replyTo, _, _, _)
           ) =>
         replyTo ! Failure(throwable)
         Behaviors.same

@@ -81,7 +81,7 @@ class Invoicing()(implicit configuration: Configuration) extends Logger {
   ): Try[ManageInvoiceResponse] =
     Await.result(
       connection.get.ask[Try[ManageInvoiceResponse]](replyTo =>
-        Connection.Protocol.ManageInvoice(replyTo, invoices, entity)
+        Connection.Protocol.ManageInvoice(replyTo, typedSystem, invoices, entity)
       ),
       timeout
     )
@@ -93,7 +93,7 @@ class Invoicing()(implicit configuration: Configuration) extends Logger {
   ): Future[Try[ManageInvoiceResponse]] =
     retry.Backoff(maxRetry, baseDelay).apply {
       connection.get.ask[Try[ManageInvoiceResponse]](replyTo =>
-        Connection.Protocol.ManageInvoice(replyTo, invoices, entity)
+        Connection.Protocol.ManageInvoice(replyTo, typedSystem, invoices, entity)
       )
     }(retry.Success.always, typedSystem.executionContext)
 
@@ -103,6 +103,7 @@ class Invoicing()(implicit configuration: Configuration) extends Logger {
     connection.get.ask[Try[QueryTransactionStatusResponse]](replyTo =>
       Connection.Protocol.QueryTransactionStatus(
         replyTo,
+        typedSystem,
         transactionID,
         entity,
         returnOriginalRequest
@@ -133,7 +134,7 @@ class Invoicing()(implicit configuration: Configuration) extends Logger {
     status(transactionID, entity, returnOriginalRequest = false, timeout)(askTimeout)
 
   def validate(entity: Entity)(implicit askTimeout: Timeout): Future[Try[Unit]] =
-    connection.get.ask[Try[Unit]](replyTo => Connection.Protocol.ValidateEntity(replyTo, entity))
+    connection.get.ask[Try[Unit]](replyTo => Connection.Protocol.ValidateEntity(replyTo, typedSystem, entity))
 
   def validate(entity: Entity, timeout: FiniteDuration)(
     implicit askTimeout: Timeout
@@ -143,7 +144,7 @@ class Invoicing()(implicit configuration: Configuration) extends Logger {
     implicit askTimeout: Timeout
   ): Future[Try[Taxpayer]] =
     connection.get.ask[Try[Taxpayer]](replyTo =>
-      Connection.Protocol.QueryTaxpayer(replyTo, taxNumber, entity)
+      Connection.Protocol.QueryTaxpayer(replyTo, typedSystem, taxNumber, entity)
     )
 
   def queryTaxpayer(taxNumber: String, entity: Entity, timeout: FiniteDuration)(
@@ -154,7 +155,7 @@ class Invoicing()(implicit configuration: Configuration) extends Logger {
     implicit askTimeout: Timeout
   ): Future[Try[QueryInvoiceDataResponse]] =
     connection.get.ask[Try[QueryInvoiceDataResponse]](replyTo =>
-      Connection.Protocol.QueryInvoiceData(replyTo, invoiceNumber, entity)
+      Connection.Protocol.QueryInvoiceData(replyTo, typedSystem, invoiceNumber, entity)
     )
 
   def queryInvoiceData(invoiceNumber: String, entity: Entity, timeout: FiniteDuration)(
@@ -215,6 +216,7 @@ class Invoicing()(implicit configuration: Configuration) extends Logger {
     connection.get.ask[Try[Seq[QueryInvoiceDigestResponse]]](replyTo =>
       Connection.Protocol.QueryInvoiceDigest(
         replyTo,
+        typedSystem,
         entity,
         direction,
         fromDate,
